@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"reflect"
 	"strings"
@@ -291,6 +292,66 @@ func TestPresentMalformedOptionalArraysAndMissingHeaderStillRefuseWhole(t *testi
 			page, e := c.QueryPage(context.Background(), query(), ReadOptions{})
 			if e == nil || len(page.Cells) != 0 || page.NextCursor != "" {
 				t.Fatal("malformed present optional array/header delivered")
+			}
+		})
+	}
+}
+func TestNativeS3OutputAuthorityAdmissionIsLazy(t *testing.T) {
+	base := Options{Region: "us-east-1", Partition: "aws", AccountID: testAccount, SourceID: "owned-source", PolicyRevision: "v1", WorkGroup: "owned", Catalog: "AwsDataCatalog", Database: "native", ExpectedBucketOwner: testAccount, Encryption: Encryption{Option: "SSE_S3"}, MaxScanBytes: 10000000}
+	for _, sample := range []struct {
+		name, output string
+		valid        bool
+	}{
+		{"fixture-bucket", testOutput, true},
+		{"dotted-bucket", "s3://owned.fixture-results/native/", true},
+		{"empty-port", "s3://owned-fixture-results:/native/", false},
+		{"bare-colon", "s3://:/native/", false},
+		{"explicit-port", "s3://owned-fixture-results:443/native/", false},
+		{"ipv6-host", "s3://[::1]/native/", false},
+		{"ipv6-empty-port", "s3://[::1]:/native/", false},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			var auth, dial atomic.Int64
+			options := base
+			options.OutputLocation = sample.output
+			options.Tables = map[string]Table{"rows": {Name: "EXISTING_ROWS", IDColumn: "ID", Columns: []Column{{Name: "ID", Type: "varchar"}}}}
+			options.Identity = func(context.Context) (Identity, error) {
+				auth.Add(1)
+				return AttestedIdentity(testAccount, "reader", "generation1", testCredentials), nil
+			}
+			options.Transport = &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
+				dial.Add(1)
+				return nil, errors.New("unexpected dial")
+			}}
+			c, e := New(options)
+			if sample.valid {
+				if c == nil || e != nil {
+					if c != nil {
+						_ = c.Close()
+					}
+					t.Fatalf("valid output refused: %v", e)
+				}
+				if c.options.OutputLocation != sample.output {
+					_ = c.Close()
+					t.Fatalf("output rewritten: %q", c.options.OutputLocation)
+				}
+				if e = c.Close(); e != nil {
+					t.Fatalf("close failed: %v", e)
+				}
+			} else {
+				if c != nil || e == nil {
+					if c != nil {
+						_ = c.Close()
+					}
+					t.Fatal("invalid output admitted")
+				}
+				var typed *Error
+				if !errors.As(e, &typed) || typed.Code != "configuration" || typed.Status != 0 || e.Error() != "athena: configuration" || errors.Unwrap(e) != nil {
+					t.Fatalf("wrong rejection: %v", e)
+				}
+			}
+			if auth.Load() != 0 || dial.Load() != 0 {
+				t.Fatalf("constructor performed authority/network I/O: auth=%d dial=%d", auth.Load(), dial.Load())
 			}
 		})
 	}

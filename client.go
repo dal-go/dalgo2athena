@@ -139,7 +139,7 @@ func New(options Options) (*Client, error) {
 		return nil, fail("configuration")
 	}
 	u, e := url.Parse(options.OutputLocation)
-	if e != nil || u.Scheme != "s3" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || !strings.HasSuffix(u.Path, "/") || len(options.OutputLocation) > 2048 {
+	if e != nil || u.Scheme != "s3" || u.Host == "" || u.Host != u.Hostname() || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || !strings.HasSuffix(u.Path, "/") || len(options.OutputLocation) > 2048 {
 		return nil, fail("configuration")
 	}
 	if options.MaxScanBytes < 10000000 || (options.Encryption.Option != "SSE_S3" && options.Encryption.Option != "SSE_KMS") || options.Encryption.Option == "SSE_KMS" && !name(options.Encryption.KMSKey) || options.Encryption.Option == "SSE_S3" && options.Encryption.KMSKey != "" {
